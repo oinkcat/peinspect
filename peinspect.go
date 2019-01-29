@@ -2,6 +2,8 @@ package main
 
 import (
     "os"
+    "path"
+    "fmt"
     "log"
     "./peformat"
 )
@@ -12,8 +14,10 @@ func main() {
         file, err := os.Open(peFilePath)
         defer file.Close()
         
-        if err == nil  {
-            pe.Inspect(file)
+        if err == nil {
+            fmt.Printf("Summary of %s:\n", path.Base(peFilePath))
+            info := pe.ParseFile(file)
+            info.Inspect()
         } else {
             log.Fatal(err)
         }
