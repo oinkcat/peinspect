@@ -9,10 +9,8 @@ import (
     "encoding/binary"
 )
 
-type PEMachineType uint16
-
-// Machine type
 const (
+    // Machine type
     MT_I386 = 0x14c
     MT_X64 = 0x8664
     MT_ARM7 = 0x1c4
@@ -20,11 +18,18 @@ const (
     MT_EFI = 0xebc
     MT_ARM64 = 0xaa64
     MT_CLI = 0xc0ee
+    
+    // Characteristics
+    CHR_SYSTEM = 0x1000
+    CHR_DLL = 0x2000
 )
 
 // Parsed information
 type PEInfo struct {
     archType uint16
+    isDriver bool
+    isDLL bool
+    entryPointAddress uint32
 }
 
 // .exe file DOS header
@@ -61,6 +66,18 @@ type CoffHeader struct {
     Characteristics uint16
 }
 
+// PE optional header common fields
+type PEOptHeaderCommon struct {
+    Signature uint16
+    MajorLinkerVersion byte
+    MinorLinkerVersion byte
+    SizeOfCode uint32
+    SizeOfinitializedData uint32
+    SizeOfUninitializedData uint32
+    AddressOfEntryPoint uint32
+    BaseOfCode uint32
+}
+
 // Read file contents and populate given structure variable
 func readIntoStruct(file *os.File, data interface{}) {
     bytesRead := make([]byte, binary.Size(data))
@@ -85,12 +102,20 @@ func parsePE(imgFile *os.File) *PEInfo {
         log.Fatal("Invalid PE signature!")
     }
     
+    // COFF header
     var coffHeader CoffHeader
     readIntoStruct(imgFile, &coffHeader)
     
-    log.Printf("COFF header: %v\n", coffHeader)
+    // PE optional header
+    var peOptCommon PEOptHeaderCommon
+    readIntoStruct(imgFile, &peOptCommon)
     
-    return &PEInfo { coffHeader.Machine }
+    return &PEInfo {
+        coffHeader.Machine,
+        coffHeader.Characteristics & CHR_SYSTEM != 0,
+        coffHeader.Characteristics & CHR_DLL != 0,
+        peOptCommon.AddressOfEntryPoint,
+    }
 }
 
 // Parse PE executable
@@ -124,4 +149,14 @@ func (pe *PEInfo) Arch() string {
 func (pe *PEInfo) Inspect() {
     fmt.Printf("Architecture: %s\n", pe.Arch())
     fmt.Printf("Is 64 bit: %v\n", pe.Is64bit())
+    
+    if(pe.isDriver) {
+        fmt.Println("System image (driver) file")
+    }
+    
+    if(pe.isDLL) {
+        fmt.Println("DLL image file")
+    }
+    
+    fmt.Printf("Entry point: %#X\n", pe.entryPointAddress)
 }
