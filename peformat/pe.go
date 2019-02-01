@@ -22,14 +22,44 @@ const (
     // Characteristics
     CHR_SYSTEM = 0x1000
     CHR_DLL = 0x2000
+    
+    // Signarures
+    SGN_HDR32_MAGIC = 0x10b
+    SGN_HDR64_MAGIC = 0x20b
+    SGN_HDRROM_MAGIC = 0x107
+    
+    // Subsystem names
+    SS_UNKNOWN = 0
+    SS_NATIVE = 1
+    SS_WINDOWS_GUI = 2
+    SS_WINDOWS_CUI = 3
+    SS_OS2_CUI = 5
+    SS_POSIX_CUI = 7
+    SS_WINDOWS_CE = 9
+    SS_EFI_APP = 10
+    SS_EFI_BOOT_DRIVER = 11
+    SS_EFI_RT_DRIVER = 12
+    SS_EFI_ROM = 13
+    SS_XBOX = 14
+    SS_WINDOWS_BOOT = 16
 )
 
 // Parsed information
 type PEInfo struct {
+    // basic info
     archType uint16
     isDriver bool
     isDLL bool
     entryPointAddress uint32
+    subsystem uint16
+    // Required versions
+    osMajorVersion uint16
+    osMinorVersion uint16
+    ssMajorVersion uint16
+    ssMinorVersion uint16
+    // Reserved memory
+    reservedStackBytes uint64
+    reservedHeapBytes uint64
 }
 
 // .exe file DOS header
@@ -66,7 +96,7 @@ type CoffHeader struct {
     Characteristics uint16
 }
 
-// PE optional header common fields
+// PE Optional Header common fields
 type PEOptHeaderCommon struct {
     Signature uint16
     MajorLinkerVersion byte
@@ -76,6 +106,63 @@ type PEOptHeaderCommon struct {
     SizeOfUninitializedData uint32
     AddressOfEntryPoint uint32
     BaseOfCode uint32
+}
+
+// 32 bit version of PE Optional Header
+type PEOptHeader32Bit struct {
+    BaseOfData uint32
+    ImageBase uint32
+    SectionAlignment uint32
+    FileAlignment uint32
+    MajorOSVersion uint16
+    MinorOSVersion uint16
+    MajorImageVersion uint16
+    MinorImageVersion uint16
+    MajorSubsystemVersion uint16
+    MinorSubsystemVersion uint16
+    Win32VersionValue uint32
+    SizeOfImage uint32
+    SizeOfHeaders uint32
+    Checksum uint32
+    Subsystem uint16
+    DLLCharacteristics uint16
+    SizeOfStackReserve uint32
+    SizeOfStackCommit uint32
+    SizeOfHeapReserve uint32
+    SizeOfHeapCommit uint32
+    LoaderFlags uint32
+    NumberOfRvaAndSizes uint32
+}
+
+// 64 bit version of PE Optional Header
+type PEOptHeader64Bit struct {
+    ImageBase uint64
+    SectionAlignment uint32
+    FileAlignment uint32
+    MajorOSVersion uint16
+    MinorOSVersion uint16
+    MajorImageVersion uint16
+    MinorImageVersion uint16
+    MajorSubsystemVersion uint16
+    MinorSubsystemVersion uint16
+    Win32VersionValue uint32
+    SizeOfImage uint32
+    SizeOfHeaders uint32
+    Checksum uint32
+    Subsystem uint16
+    DLLCharacteristics uint16
+    SizeOfStackReserve uint64
+    SizeOfStackCommit uint64
+    SizeOfHeapReserve uint64
+    SizeOfHeapCommit uint64
+    LoaderFlags uint32
+    NumberOfRvaAndSizes uint32
+}
+
+// Data directory entry
+type DataDirectory struct {
+    VirtualAddress uint32
+    Size uint32
 }
 
 // Read file contents and populate given structure variable
@@ -110,12 +197,38 @@ func parsePE(imgFile *os.File) *PEInfo {
     var peOptCommon PEOptHeaderCommon
     readIntoStruct(imgFile, &peOptCommon)
     
-    return &PEInfo {
-        coffHeader.Machine,
-        coffHeader.Characteristics & CHR_SYSTEM != 0,
-        coffHeader.Characteristics & CHR_DLL != 0,
-        peOptCommon.AddressOfEntryPoint,
+    peInfo := &PEInfo {
+        archType: coffHeader.Machine,
+        isDriver: coffHeader.Characteristics & CHR_SYSTEM != 0,
+        isDLL: coffHeader.Characteristics & CHR_DLL != 0,
+        entryPointAddress: peOptCommon.AddressOfEntryPoint,
     }
+    
+    if peOptCommon.Signature == SGN_HDR32_MAGIC {
+        var pe32Header PEOptHeader32Bit
+        readIntoStruct(imgFile, &pe32Header)
+        peInfo.subsystem = pe32Header.Subsystem
+        peInfo.osMajorVersion = pe32Header.MajorOSVersion
+        peInfo.osMinorVersion = pe32Header.MinorOSVersion
+        peInfo.ssMajorVersion = pe32Header.MajorSubsystemVersion
+        peInfo.ssMinorVersion = pe32Header.MinorSubsystemVersion
+        peInfo.reservedStackBytes = uint64(pe32Header.SizeOfStackReserve)
+        peInfo.reservedHeapBytes = uint64(pe32Header.SizeOfHeapReserve)
+    } else if peOptCommon.Signature == SGN_HDR64_MAGIC {
+        var pe64Header PEOptHeader64Bit
+        readIntoStruct(imgFile, &pe64Header)
+        peInfo.subsystem = pe64Header.Subsystem
+        peInfo.osMajorVersion = pe64Header.MajorOSVersion
+        peInfo.osMinorVersion = pe64Header.MinorOSVersion
+        peInfo.ssMajorVersion = pe64Header.MajorSubsystemVersion
+        peInfo.ssMinorVersion = pe64Header.MinorSubsystemVersion
+        peInfo.reservedStackBytes = pe64Header.SizeOfStackReserve
+        peInfo.reservedHeapBytes = pe64Header.SizeOfHeapReserve
+    } else {
+        log.Fatal("Executable type not supported!")
+    }
+    
+    return peInfo
 }
 
 // Parse PE executable
@@ -123,11 +236,13 @@ func ParseFile(imgFile *os.File) *PEInfo {
     return parsePE(imgFile)
 }
 
+// Is image a 64 bit
 func (pe *PEInfo) Is64bit() bool {
     return pe.archType == MT_X64 || pe.archType == MT_IA64 || pe.archType == MT_ARM64
 }
 
-func (pe *PEInfo) Arch() string {
+// Get machine architecture name
+func (pe *PEInfo) ArchName() string {
     knownArchs := map[uint16]string {
         MT_I386: "Intel 386",
         MT_X64: "Intel/AMD x64",
@@ -145,18 +260,55 @@ func (pe *PEInfo) Arch() string {
     return "Other"
 }
 
+func (pe *PEInfo) SubsystemName() string {
+    knownSubsystems := map[uint16]string {
+        SS_UNKNOWN: "Unknown",
+        SS_NATIVE: "Native",
+        SS_WINDOWS_GUI: "Windows GUI",
+        SS_WINDOWS_CUI: "Windows Console",
+        SS_OS2_CUI: "OS/2 Console",
+        SS_POSIX_CUI: "POSIX Console",
+        SS_WINDOWS_CE: "Windows CE",
+        SS_EFI_APP: "EFI Application",
+        SS_EFI_BOOT_DRIVER: "EFI Boot Driver",
+        SS_EFI_RT_DRIVER: "EFI Runtime Driver",
+        SS_EFI_ROM: "EFI ROM image",
+        SS_XBOX: "XBOX application",
+        SS_WINDOWS_BOOT: "Windows Boot Application",
+    }
+    
+    ssName, ok := knownSubsystems[pe.subsystem]
+    if !ok {
+        log.Fatalf("Unknown subsystem: %#x!\n", pe.subsystem)
+    }
+    
+    return ssName
+}
+
 // Print basic information
 func (pe *PEInfo) Inspect() {
-    fmt.Printf("Architecture: %s\n", pe.Arch())
-    fmt.Printf("Is 64 bit: %v\n", pe.Is64bit())
+    fmt.Printf("Architecture: %s", pe.ArchName())
     
-    if(pe.isDriver) {
+    if pe.Is64bit() {
+        fmt.Println(", 64 bit")
+    } else {
+        fmt.Println(", 32 bit")
+    }
+    
+    if pe.isDriver {
         fmt.Println("System image (driver) file")
     }
     
-    if(pe.isDLL) {
+    if pe.isDLL {
         fmt.Println("DLL image file")
     }
     
-    fmt.Printf("Entry point: %#X\n", pe.entryPointAddress)
+    fmt.Printf("Entry point: %#x\n", pe.entryPointAddress)
+    fmt.Printf("Subsystem: %s\n", pe.SubsystemName())
+    
+    fmt.Printf("Required OS version: %d.%d\n", pe.osMajorVersion, pe.osMinorVersion)
+    fmt.Printf("Required subsystem version: %d.%d\n", pe.ssMajorVersion, pe.ssMinorVersion)
+    
+    fmt.Printf("Reserved memory for stack: %d bytes\n", pe.reservedStackBytes)
+    fmt.Printf("Reserved memory for heap: %d bytes\n", pe.reservedHeapBytes)
 }
