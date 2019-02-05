@@ -331,17 +331,6 @@ func parsePESections(imgFile *os.File, info *PEInfo) {
         }
 
         info.sections[i] = newSection
-
-        // Dump section
-        currentPos, _ := imgFile.Seek(0, os.SEEK_CUR)
-        output, _ := os.Create(newSection.Name)
-        imgFile.Seek(int64(newSection.address), os.SEEK_SET)
-        buf := make([]byte, newSection.Size)
-        imgFile.Read(buf)
-        output.Write(buf)
-        defer output.Close()
-
-        imgFile.Seek(currentPos, os.SEEK_SET)
     }
 }
 
