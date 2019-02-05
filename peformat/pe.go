@@ -42,6 +42,19 @@ const (
     SS_EFI_ROM = 13
     SS_XBOX = 14
     SS_WINDOWS_BOOT = 16
+
+    // Data directory entries
+    DIR_EXPORT = 0
+    DIR_IMPORT = 1
+    DIR_RESOURCE = 2
+
+    // Section characteristics
+    SCN_CODE uint32 = 0x20
+    SCN_INITIALIZED_DATA uint32 = 0x40
+    SCN_UNINITIALIZED_DATA uint32 = 0x80
+    SCN_MEM_EXECUTE uint32 = 0x20000000
+    SCN_MEM_READ uint32 = 0x40000000
+    SCN_MEM_WRITE uint32 = 0x80000000
 )
 
 // Parsed information
@@ -52,6 +65,9 @@ type PEInfo struct {
     isDLL bool
     entryPointAddress uint32
     subsystem uint16
+    peHeaderOffset uint16
+    baseAddress uint64
+    numOfSections uint16
     // Required versions
     osMajorVersion uint16
     osMinorVersion uint16
@@ -60,6 +76,19 @@ type PEInfo struct {
     // Reserved memory
     reservedStackBytes uint64
     reservedHeapBytes uint64
+    // Data directory
+    directory map[int]DataDirectory
+    // Sections info
+    sections []PESectionInfo
+}
+
+// Section information
+type PESectionInfo struct {
+    Name string
+    Size uint32
+    characteristics uint32
+    virtualAddress uint32
+    address uint32
 }
 
 // .exe file DOS header
@@ -165,6 +194,29 @@ type DataDirectory struct {
     Size uint32
 }
 
+// Section header
+type SectionHeader struct {
+    Name [8]byte
+    Misc uint32
+    VirtualAddress uint32
+    SizeOfRawData uint32
+    PointerToRawData uint32
+    PointerToRelocations uint32
+    PointerToLinenumbers uint32
+    NumberOfRelocations uint16
+    NumberOflineNumbers uint16
+    Characteristics uint32
+}
+
+// Information of module to import from
+type ImportDescriptor struct {
+    OriginalFirstThunk uint32
+    TimeDateStamp uint32
+    ForwarderChain uint32
+    Name uint32
+    FirstThunk uint32
+}
+
 // Read file contents and populate given structure variable
 func readIntoStruct(file *os.File, data interface{}) {
     bytesRead := make([]byte, binary.Size(data))
@@ -196,17 +248,24 @@ func parsePE(imgFile *os.File) *PEInfo {
     // PE optional header
     var peOptCommon PEOptHeaderCommon
     readIntoStruct(imgFile, &peOptCommon)
-    
+
     peInfo := &PEInfo {
         archType: coffHeader.Machine,
         isDriver: coffHeader.Characteristics & CHR_SYSTEM != 0,
         isDLL: coffHeader.Characteristics & CHR_DLL != 0,
         entryPointAddress: peOptCommon.AddressOfEntryPoint,
+        numOfSections: coffHeader.NumberOfSections,
     }
+    
+    var nDirEntries uint32
+    // Save Optional PE Header position
+    currentPos, _ := imgFile.Seek(0, os.SEEK_CUR)
+    peInfo.peHeaderOffset = uint16(currentPos)
     
     if peOptCommon.Signature == SGN_HDR32_MAGIC {
         var pe32Header PEOptHeader32Bit
         readIntoStruct(imgFile, &pe32Header)
+        peInfo.baseAddress = uint64(pe32Header.ImageBase)
         peInfo.subsystem = pe32Header.Subsystem
         peInfo.osMajorVersion = pe32Header.MajorOSVersion
         peInfo.osMinorVersion = pe32Header.MinorOSVersion
@@ -214,9 +273,11 @@ func parsePE(imgFile *os.File) *PEInfo {
         peInfo.ssMinorVersion = pe32Header.MinorSubsystemVersion
         peInfo.reservedStackBytes = uint64(pe32Header.SizeOfStackReserve)
         peInfo.reservedHeapBytes = uint64(pe32Header.SizeOfHeapReserve)
+        nDirEntries = pe32Header.NumberOfRvaAndSizes
     } else if peOptCommon.Signature == SGN_HDR64_MAGIC {
         var pe64Header PEOptHeader64Bit
         readIntoStruct(imgFile, &pe64Header)
+        peInfo.baseAddress = pe64Header.ImageBase
         peInfo.subsystem = pe64Header.Subsystem
         peInfo.osMajorVersion = pe64Header.MajorOSVersion
         peInfo.osMinorVersion = pe64Header.MinorOSVersion
@@ -224,11 +285,69 @@ func parsePE(imgFile *os.File) *PEInfo {
         peInfo.ssMinorVersion = pe64Header.MinorSubsystemVersion
         peInfo.reservedStackBytes = pe64Header.SizeOfStackReserve
         peInfo.reservedHeapBytes = pe64Header.SizeOfHeapReserve
+        nDirEntries = pe64Header.NumberOfRvaAndSizes
     } else {
         log.Fatal("Executable type not supported!")
     }
     
+    // Data directory entries
+    peInfo.directory = make(map[int]DataDirectory, nDirEntries)
+    
+    for i := 0; i < int(nDirEntries); i++ {
+        var sectInfo DataDirectory
+        readIntoStruct(imgFile, &sectInfo)
+        if(sectInfo.VirtualAddress != 0) {
+            peInfo.directory[i] = sectInfo
+        }
+    }
+    
+    // Sections
+    parsePESections(imgFile, peInfo)
+
+    // Imports
+    _, importsExists := peInfo.directory[DIR_IMPORT]
+    if importsExists {
+        parseImports(imgFile, peInfo)
+    }
+    
     return peInfo
+}
+
+// Parse PE file sections
+func parsePESections(imgFile *os.File, info *PEInfo) {
+    nSections := int(info.numOfSections)
+    info.sections = make([]PESectionInfo, nSections)
+    
+    for i := 0; i < nSections; i++ {
+        var sectHeader SectionHeader
+        readIntoStruct(imgFile, &sectHeader)
+
+        newSection := PESectionInfo {
+            Name: strings.Trim(string(sectHeader.Name[:]), "\000"),
+            Size: sectHeader.SizeOfRawData,
+            virtualAddress: sectHeader.VirtualAddress,
+            address: sectHeader.PointerToRawData,
+            characteristics: sectHeader.Characteristics,
+        }
+
+        info.sections[i] = newSection
+
+        // Dump section
+        currentPos, _ := imgFile.Seek(0, os.SEEK_CUR)
+        output, _ := os.Create(newSection.Name)
+        imgFile.Seek(int64(newSection.address), os.SEEK_SET)
+        buf := make([]byte, newSection.Size)
+        imgFile.Read(buf)
+        output.Write(buf)
+        defer output.Close()
+
+        imgFile.Seek(currentPos, os.SEEK_SET)
+    }
+}
+
+// Parse function imports
+func parseImports(imgFile *os.File, info *PEInfo) {
+    // TODO
 }
 
 // Parse PE executable
@@ -303,6 +422,7 @@ func (pe *PEInfo) Inspect() {
         fmt.Println("DLL image file")
     }
     
+    fmt.Printf("Base address: %#x\n", pe.baseAddress)
     fmt.Printf("Entry point: %#x\n", pe.entryPointAddress)
     fmt.Printf("Subsystem: %s\n", pe.SubsystemName())
     
@@ -311,4 +431,9 @@ func (pe *PEInfo) Inspect() {
     
     fmt.Printf("Reserved memory for stack: %d bytes\n", pe.reservedStackBytes)
     fmt.Printf("Reserved memory for heap: %d bytes\n", pe.reservedHeapBytes)
+
+    fmt.Println("\nSections:")
+    for _, sectInfo := range(pe.sections) {
+        fmt.Printf("Name: %s, size: %d\n", sectInfo.Name, sectInfo.Size)
+    }
 }
