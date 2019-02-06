@@ -60,6 +60,7 @@ const (
 // Parsed information
 type PEInfo struct {
     // basic info
+    FileName string
     archType uint16
     isDriver bool
     isDLL bool
@@ -80,6 +81,8 @@ type PEInfo struct {
     directory map[int]DataDirectory
     // Sections info
     sections []PESectionInfo
+    // Function imports
+    Imports []PEImportInfo
 }
 
 // Section information
@@ -88,7 +91,13 @@ type PESectionInfo struct {
     Size uint32
     characteristics uint32
     virtualAddress uint32
-    address uint32
+    filePointer uint32
+}
+
+// Import information
+type PEImportInfo struct {
+    LibraryName string
+    FunctionNames []string
 }
 
 // .exe file DOS header
@@ -326,7 +335,7 @@ func parsePESections(imgFile *os.File, info *PEInfo) {
             Name: strings.Trim(string(sectHeader.Name[:]), "\000"),
             Size: sectHeader.SizeOfRawData,
             virtualAddress: sectHeader.VirtualAddress,
-            address: sectHeader.PointerToRawData,
+            filePointer: sectHeader.PointerToRawData,
             characteristics: sectHeader.Characteristics,
         }
 
@@ -334,14 +343,102 @@ func parsePESections(imgFile *os.File, info *PEInfo) {
     }
 }
 
+// Find section that contains given RVA
+func (pe *PEInfo) findSectionByRva(rva uint32) *PESectionInfo {
+    sectionPtr := &pe.sections[0]
+    for i := 1; i < len(pe.sections); i++ {
+        if(pe.sections[i].virtualAddress > rva) {
+            break
+        }
+        sectionPtr = &pe.sections[i]
+    }
+    return sectionPtr
+}
+
+// Get file position corresponding to given RVA
+func (section *PESectionInfo) translateRva(rva uint32) uint32 {
+    offsetFromStart := rva - section.virtualAddress
+    return section.filePointer + offsetFromStart
+}
+
+// Read zero terminated string from file
+func readAsciiString(file *os.File) string {
+    readBuf:= make([]byte, 8)
+    strBuf := new(bytes.Buffer)
+    
+    for {
+        n, _ := file.Read(readBuf)
+        readBytes := readBuf[:n]
+        zeroPos := bytes.IndexByte(readBytes, 0)
+        if zeroPos ==-1 {
+            strBuf.Write(readBytes)
+        } else {
+            strBuf.Write(readBytes[:zeroPos])
+            break
+        }
+    }
+
+    return strBuf.String()
+}
+
 // Parse function imports
 func parseImports(imgFile *os.File, info *PEInfo) {
-    // TODO
+    importsRva := info.directory[DIR_IMPORT].VirtualAddress
+    dataSection := info.findSectionByRva(importsRva)
+    importsStartPos := dataSection.translateRva(importsRva)
+
+    allImportDescriptors := []ImportDescriptor {}
+    imgFile.Seek(int64(importsStartPos), os.SEEK_SET)
+
+    // Read raw import data
+    for {
+        var importDescriptor ImportDescriptor
+        readIntoStruct(imgFile, &importDescriptor)
+        if importDescriptor.FirstThunk == 0 && importDescriptor.Name == 0 {
+            break
+        }
+        allImportDescriptors = append(allImportDescriptors, importDescriptor)
+    }
+
+    // Read details by their RVAs
+    info.Imports = make([]PEImportInfo, len(allImportDescriptors))
+    for i, descriptor := range(allImportDescriptors) {
+        namePos := dataSection.translateRva(descriptor.Name)
+        imgFile.Seek(int64(namePos), os.SEEK_SET)
+        info.Imports[i] = PEImportInfo { 
+            LibraryName: readAsciiString(imgFile), 
+            FunctionNames: nil,
+        }
+
+        funcRvaArrayPos := dataSection.translateRva(descriptor.FirstThunk)
+        rvaArray := []uint32 {}
+        imgFile.Seek(int64(funcRvaArrayPos), os.SEEK_SET)
+        // Read 4 byte RVA to function name
+        rvaBuf := make([]byte, 4)
+        for {
+            imgFile.Read(rvaBuf)
+            byNameRva := binary.LittleEndian.Uint32(rvaBuf)
+            if byNameRva == 0 {
+                break
+            }
+            rvaArray = append(rvaArray, byNameRva)
+        }
+
+        // Read imported function names
+        info.Imports[i].FunctionNames = make([]string, len(rvaArray))
+        for fnIdx, nameRva := range(rvaArray) {
+            namePos := dataSection.translateRva(nameRva) + 2
+            imgFile.Seek(int64(namePos), os.SEEK_SET)
+            info.Imports[i].FunctionNames[fnIdx] = readAsciiString(imgFile)
+        }
+    }
 }
 
 // Parse PE executable
 func ParseFile(imgFile *os.File) *PEInfo {
-    return parsePE(imgFile)
+    parsedInfo := parsePE(imgFile)
+    parsedInfo.FileName = imgFile.Name()
+    return parsedInfo
 }
 
 // Is image a 64 bit
@@ -424,5 +521,13 @@ func (pe *PEInfo) Inspect() {
     fmt.Println("\nSections:")
     for _, sectInfo := range(pe.sections) {
         fmt.Printf("Name: %s, size: %d\n", sectInfo.Name, sectInfo.Size)
+    }
+
+    fmt.Println("\nImports:")
+    for _, importInfo := range(pe.Imports) {
+        fmt.Printf("Library: %s\n", importInfo.LibraryName)
+        for _, funcName := range(importInfo.FunctionNames) {
+            fmt.Printf("- %s\n", funcName)
+        }
     }
 }
