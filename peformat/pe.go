@@ -47,6 +47,7 @@ const (
     DIR_EXPORT = 0
     DIR_IMPORT = 1
     DIR_RESOURCE = 2
+    DIR_DEBUG = 6
 
     // Section characteristics
     SCN_CODE uint32 = 0x20
@@ -82,7 +83,9 @@ type PEInfo struct {
     // Sections info
     sections []PESectionInfo
     // Function imports
-    Imports []PEImportInfo
+    Imports []PEImportExportInfo
+    // Function exports
+    Exports PEImportExportInfo
 }
 
 // Section information
@@ -95,7 +98,7 @@ type PESectionInfo struct {
 }
 
 // Import information
-type PEImportInfo struct {
+type PEImportExportInfo struct {
     LibraryName string
     FunctionNames []string
 }
@@ -226,6 +229,21 @@ type ImportDescriptor struct {
     FirstThunk uint32
 }
 
+// Export directory header
+type ExportDirectory struct {
+    Characteristics uint32
+    TimeDateStamp uint32
+    MajorVersion uint16
+    MinorVersion uint16
+    Name uint32
+    Base uint32
+    NumberOfFunctions uint32
+    NumberOfNames uint32
+    AddressOfFunctions uint32
+    AddressOfNames uint32
+    AddressOfNameOrdinals uint32
+}
+
 // Read file contents and populate given structure variable
 func readIntoStruct(file *os.File, data interface{}) {
     bytesRead := make([]byte, binary.Size(data))
@@ -314,9 +332,13 @@ func parsePE(imgFile *os.File) *PEInfo {
     parsePESections(imgFile, peInfo)
 
     // Imports
-    _, importsExists := peInfo.directory[DIR_IMPORT]
-    if importsExists {
+    if _, hasImports := peInfo.directory[DIR_IMPORT]; hasImports {
         parseImports(imgFile, peInfo)
+    }
+
+    // Exports
+    if _, hasExports := peInfo.directory[DIR_EXPORT]; hasExports {
+        parseExports(imgFile, peInfo)
     }
     
     return peInfo
@@ -370,7 +392,7 @@ func readAsciiString(file *os.File) string {
         n, _ := file.Read(readBuf)
         readBytes := readBuf[:n]
         zeroPos := bytes.IndexByte(readBytes, 0)
-        if zeroPos ==-1 {
+        if zeroPos == -1 {
             strBuf.Write(readBytes)
         } else {
             strBuf.Write(readBytes[:zeroPos])
@@ -401,11 +423,11 @@ func parseImports(imgFile *os.File, info *PEInfo) {
     }
 
     // Read details by their RVAs
-    info.Imports = make([]PEImportInfo, len(allImportDescriptors))
+    info.Imports = make([]PEImportExportInfo, len(allImportDescriptors))
     for i, descriptor := range(allImportDescriptors) {
         namePos := dataSection.translateRva(descriptor.Name)
         imgFile.Seek(int64(namePos), os.SEEK_SET)
-        info.Imports[i] = PEImportInfo { 
+        info.Imports[i] = PEImportExportInfo {
             LibraryName: readAsciiString(imgFile), 
             FunctionNames: nil,
         }
@@ -431,6 +453,42 @@ func parseImports(imgFile *os.File, info *PEInfo) {
             imgFile.Seek(int64(namePos), os.SEEK_SET)
             info.Imports[i].FunctionNames[fnIdx] = readAsciiString(imgFile)
         }
+    }
+}
+
+// Parse exported functions
+func parseExports(imgFile *os.File, info *PEInfo) {
+    exportsRva := info.directory[DIR_EXPORT].VirtualAddress
+    dataSection := info.findSectionByRva(exportsRva)
+    exportsStartPos := dataSection.translateRva(exportsRva)
+
+    imgFile.Seek(int64(exportsStartPos), os.SEEK_SET)
+    var exportsHeader ExportDirectory
+    readIntoStruct(imgFile, &exportsHeader)
+
+    libNamePos := dataSection.translateRva(exportsHeader.Name)
+    imgFile.Seek(int64(libNamePos), os.SEEK_SET)
+
+    numExports := int(exportsHeader.NumberOfNames)
+    info.Exports.LibraryName = readAsciiString(imgFile)
+    info.Exports.FunctionNames = make([]string, numExports)
+
+    nameRvas := make([]uint32, exportsHeader.NumberOfNames)
+    rvaBuf := make([]byte, 4)
+    namesStartPos := dataSection.translateRva(exportsHeader.AddressOfNames)
+    imgFile.Seek(int64(namesStartPos), os.SEEK_SET)
+
+    // Read all RVAs
+    for i := 0; i < numExports; i++ {
+        imgFile.Read(rvaBuf)
+        nameRvas[i] = binary.LittleEndian.Uint32(rvaBuf)
+    }
+
+    // Resolve exported names
+    for i, rva := range(nameRvas) {
+        funcNamePos := dataSection.translateRva(rva)
+        imgFile.Seek(int64(funcNamePos), os.SEEK_SET)
+        info.Exports.FunctionNames[i] = readAsciiString(imgFile)
     }
 }
 
@@ -464,7 +522,6 @@ func (pe *PEInfo) ArchName() string {
     }
     return "Other"
 }
-
 func (pe *PEInfo) SubsystemName() string {
     knownSubsystems := map[uint16]string {
         SS_UNKNOWN: "Unknown",
@@ -518,16 +575,31 @@ func (pe *PEInfo) Inspect() {
     fmt.Printf("Reserved memory for stack: %d bytes\n", pe.reservedStackBytes)
     fmt.Printf("Reserved memory for heap: %d bytes\n", pe.reservedHeapBytes)
 
+    if _, ok := pe.directory[DIR_DEBUG]; ok {
+        fmt.Println("Debug information available")
+    }
+
     fmt.Println("\nSections:")
     for _, sectInfo := range(pe.sections) {
         fmt.Printf("Name: %s, size: %d\n", sectInfo.Name, sectInfo.Size)
     }
 
-    fmt.Println("\nImports:")
-    for _, importInfo := range(pe.Imports) {
-        fmt.Printf("Library: %s\n", importInfo.LibraryName)
-        for _, funcName := range(importInfo.FunctionNames) {
-            fmt.Printf("- %s\n", funcName)
+    // Imported functions
+    if len(pe.Imports) > 0 {
+        fmt.Println("\nImports:")
+        for _, importInfo := range(pe.Imports) {
+            fmt.Printf("Library: %s\n", importInfo.LibraryName)
+            for _, funcName := range(importInfo.FunctionNames) {
+                fmt.Printf("- %s\n", funcName)
+            }
+        }
+    }
+
+    // Exported functions
+    if pe.Exports.FunctionNames != nil {
+        fmt.Printf("\nExports from module %s:\n", pe.Exports.LibraryName)
+        for _, fnName := range(pe.Exports.FunctionNames) {
+            fmt.Printf("- %s\n", fnName)
         }
     }
 }
