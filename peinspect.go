@@ -11,12 +11,11 @@ import (
 func main() {
     if len(os.Args) > 1 {
         peFilePath := os.Args[1]
-        file, err := os.Open(peFilePath)
-        defer file.Close()
+        info, err := pe.OpenExecutable(peFilePath)
+        defer info.Close()
         
         if err == nil {
-            fmt.Printf("Summary of %s:\n", path.Base(peFilePath))
-            info := pe.ParseFile(file)
+            fmt.Printf("Summary of %s:\n", path.Base(info.FileName))
             info.Inspect()
         } else {
             log.Fatal(err)

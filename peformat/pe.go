@@ -3,6 +3,7 @@ package pe
 import (
     "os"
     "log"
+    "errors"
     "fmt"
     "strings"
     "bytes"
@@ -60,7 +61,8 @@ const (
 
 // Parsed information
 type PEInfo struct {
-    // basic info
+    file *os.File
+    // Basic info
     FileName string
     archType uint16
     isDriver bool
@@ -254,7 +256,7 @@ func readIntoStruct(file *os.File, data interface{}) {
 }
 
 // Parse internal structures
-func parsePE(imgFile *os.File) *PEInfo {
+func parsePE(imgFile *os.File) (*PEInfo, error) {
     // Read DOS header
     var dosHeader DosHeader
     readIntoStruct(imgFile, &dosHeader)
@@ -265,7 +267,7 @@ func parsePE(imgFile *os.File) *PEInfo {
     imgFile.Read(peSignBuf)
     
     if strings.Trim(string(peSignBuf), "\000") != "PE" {
-        log.Fatal("Invalid PE signature!")
+        return nil, errors.New("Invalid PE signature!")
     }
     
     // COFF header
@@ -277,6 +279,7 @@ func parsePE(imgFile *os.File) *PEInfo {
     readIntoStruct(imgFile, &peOptCommon)
 
     peInfo := &PEInfo {
+        file: imgFile,
         archType: coffHeader.Machine,
         isDriver: coffHeader.Characteristics & CHR_SYSTEM != 0,
         isDLL: coffHeader.Characteristics & CHR_DLL != 0,
@@ -314,7 +317,7 @@ func parsePE(imgFile *os.File) *PEInfo {
         peInfo.reservedHeapBytes = pe64Header.SizeOfHeapReserve
         nDirEntries = pe64Header.NumberOfRvaAndSizes
     } else {
-        log.Fatal("Executable type not supported!")
+        return nil, errors.New("Executable type not supported!")
     }
     
     // Data directory entries
@@ -341,7 +344,7 @@ func parsePE(imgFile *os.File) *PEInfo {
         parseExports(imgFile, peInfo)
     }
     
-    return peInfo
+    return peInfo, nil
 }
 
 // Parse PE file sections
@@ -492,13 +495,6 @@ func parseExports(imgFile *os.File, info *PEInfo) {
     }
 }
 
-// Parse PE executable
-func ParseFile(imgFile *os.File) *PEInfo {
-    parsedInfo := parsePE(imgFile)
-    parsedInfo.FileName = imgFile.Name()
-    return parsedInfo
-}
-
 // Is image a 64 bit
 func (pe *PEInfo) Is64bit() bool {
     return pe.archType == MT_X64 || pe.archType == MT_IA64 || pe.archType == MT_ARM64
@@ -545,6 +541,26 @@ func (pe *PEInfo) SubsystemName() string {
     }
     
     return ssName
+}
+
+// Open PE executable file
+func OpenExecutable(fileName string) (*PEInfo, error) {
+    file, err := os.Open(fileName)
+
+    if err == nil {
+        parsedInfo, err := parsePE(file)
+        parsedInfo.FileName = file.Name()
+        return parsedInfo, err
+    } else {
+        return nil, err
+    }
+}
+
+// Close underlying file
+func (pe *PEInfo) Close() {
+    if pe != nil && pe.file != nil {
+        pe.file.Close()
+    }
 }
 
 // Print basic information
