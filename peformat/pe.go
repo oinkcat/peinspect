@@ -83,7 +83,7 @@ type PEInfo struct {
     // Data directory
     directory map[int]DataDirectory
     // Sections info
-    sections []PESectionInfo
+    Sections []PESectionInfo
     // Function imports
     Imports []PEImportExportInfo
     // Function exports
@@ -350,7 +350,7 @@ func parsePE(imgFile *os.File) (*PEInfo, error) {
 // Parse PE file sections
 func parsePESections(imgFile *os.File, info *PEInfo) {
     nSections := int(info.numOfSections)
-    info.sections = make([]PESectionInfo, nSections)
+    info.Sections = make([]PESectionInfo, nSections)
     
     for i := 0; i < nSections; i++ {
         var sectHeader SectionHeader
@@ -364,18 +364,18 @@ func parsePESections(imgFile *os.File, info *PEInfo) {
             characteristics: sectHeader.Characteristics,
         }
 
-        info.sections[i] = newSection
+        info.Sections[i] = newSection
     }
 }
 
 // Find section that contains given RVA
 func (pe *PEInfo) findSectionByRva(rva uint32) *PESectionInfo {
-    sectionPtr := &pe.sections[0]
-    for i := 1; i < len(pe.sections); i++ {
-        if(pe.sections[i].virtualAddress > rva) {
+    sectionPtr := &pe.Sections[0]
+    for i := 1; i < len(pe.Sections); i++ {
+        if(pe.Sections[i].virtualAddress > rva) {
             break
         }
-        sectionPtr = &pe.sections[i]
+        sectionPtr = &pe.Sections[i]
     }
     return sectionPtr
 }
@@ -495,6 +495,30 @@ func parseExports(imgFile *os.File, info *PEInfo) {
     }
 }
 
+// Get string representation of section info
+func (section PESectionInfo) String() string {
+    charsMap := map[uint32]string {
+        SCN_CODE: "code",
+        SCN_INITIALIZED_DATA: "initialized data",
+        SCN_UNINITIALIZED_DATA: "uninitialized data",
+        SCN_MEM_READ: "read",
+        SCN_MEM_WRITE: "write",
+        SCN_MEM_EXECUTE: "execute",
+    }
+    charNames := []string {}
+
+    for flag, name := range(charsMap) {
+        if section.characteristics & flag != 0 {
+            charNames = append(charNames, name)
+        }
+    }
+    charsString := strings.Join(charNames, ", ")
+
+    return fmt.Sprintf("Name: %s, size: %d, [%s]", section.Name, 
+                                                   section.Size, 
+                                                   charsString)
+}
+
 // Is image a 64 bit
 func (pe *PEInfo) Is64bit() bool {
     return pe.archType == MT_X64 || pe.archType == MT_IA64 || pe.archType == MT_ARM64
@@ -596,8 +620,8 @@ func (pe *PEInfo) Inspect() {
     }
 
     fmt.Println("\nSections:")
-    for _, sectInfo := range(pe.sections) {
-        fmt.Printf("Name: %s, size: %d\n", sectInfo.Name, sectInfo.Size)
+    for _, sectInfo := range(pe.Sections) {
+        fmt.Println(sectInfo)
     }
 
     // Imported functions
