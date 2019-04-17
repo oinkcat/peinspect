@@ -587,39 +587,72 @@ func (pe *PEInfo) Close() {
     }
 }
 
-// Print basic information
-func (pe *PEInfo) Inspect() {
-    fmt.Printf("Architecture: %s", pe.ArchName())
+// Get string representation of module and used functions
+func (modInfo PEImportExportInfo) String() string {
+    buffer := new(bytes.Buffer)
+    buffer.WriteString(fmt.Sprintf("Module %s:\n", modInfo.LibraryName))
+
+    for _, funcName := range(modInfo.FunctionNames) {
+        buffer.WriteString(funcName)
+        buffer.WriteRune('\n')
+    }
+
+    return buffer.String()
+}
+
+// Get basic information as string
+func (pe PEInfo) String() string {
+    buffer := new(bytes.Buffer)
+
+    appendString := func(line string) {
+        buffer.WriteString(line)
+    }
+    appendFmt := func(format string, args ...interface{}) {
+        line := fmt.Sprintf(format, args...)
+        appendString(line)
+    }
+
+    appendFmt("Architecture: %s", pe.ArchName())
     
     if pe.Is64bit() {
-        fmt.Println(", 64 bit")
+        appendString(", 64 bit")
     } else {
-        fmt.Println(", 32 bit")
+        appendString(", 32 bit")
     }
+    appendString("\n")
     
     if pe.isDriver {
-        fmt.Println("System image (driver) file")
+        appendString("System image (driver) file\n")
     }
     
     if pe.isDLL {
-        fmt.Println("DLL image file")
+        appendString("DLL image file\n")
     }
     
-    fmt.Printf("Base address: %#x\n", pe.baseAddress)
-    fmt.Printf("Entry point: %#x\n", pe.entryPointAddress)
-    fmt.Printf("Subsystem: %s\n", pe.SubsystemName())
+    appendFmt("Base address: %#x\n", pe.baseAddress)
+    appendFmt("Entry point: %#x\n", pe.entryPointAddress)
+    appendFmt("Subsystem: %s\n", pe.SubsystemName())
     
-    fmt.Printf("Required OS version: %d.%d\n", pe.osMajorVersion, pe.osMinorVersion)
-    fmt.Printf("Required subsystem version: %d.%d\n", pe.ssMajorVersion, pe.ssMinorVersion)
+    appendFmt("Required OS version: %d.%d\n", pe.osMajorVersion, pe.osMinorVersion)
+    appendFmt("Required subsystem version: %d.%d\n", pe.ssMajorVersion, pe.ssMinorVersion)
     
-    fmt.Printf("Reserved memory for stack: %d bytes\n", pe.reservedStackBytes)
-    fmt.Printf("Reserved memory for heap: %d bytes\n", pe.reservedHeapBytes)
+    appendFmt("Reserved memory for stack: %d bytes\n", pe.reservedStackBytes)
+    appendFmt("Reserved memory for heap: %d bytes\n", pe.reservedHeapBytes)
 
     if _, ok := pe.directory[DIR_DEBUG]; ok {
-        fmt.Println("Debug information available")
+        appendString("Debug information available\n")
     }
 
-    fmt.Println("\nSections:")
+    return buffer.String()
+}
+
+// Print information about executable
+func (pe *PEInfo) Inspect() {
+    // Basic information
+    fmt.Println(pe)
+
+    // Sections
+    fmt.Println("Sections:")
     for _, sectInfo := range(pe.Sections) {
         fmt.Println(sectInfo)
     }
@@ -628,18 +661,13 @@ func (pe *PEInfo) Inspect() {
     if len(pe.Imports) > 0 {
         fmt.Println("\nImports:")
         for _, importInfo := range(pe.Imports) {
-            fmt.Printf("Library: %s\n", importInfo.LibraryName)
-            for _, funcName := range(importInfo.FunctionNames) {
-                fmt.Printf("- %s\n", funcName)
-            }
+            fmt.Println(importInfo)
         }
     }
 
     // Exported functions
     if pe.Exports.FunctionNames != nil {
-        fmt.Printf("\nExports from module %s:\n", pe.Exports.LibraryName)
-        for _, fnName := range(pe.Exports.FunctionNames) {
-            fmt.Printf("- %s\n", fnName)
-        }
+        fmt.Println("Exports:")
+        fmt.Println(pe.Exports)
     }
 }
