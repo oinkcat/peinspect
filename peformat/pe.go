@@ -645,29 +645,3 @@ func (pe PEInfo) String() string {
 
     return buffer.String()
 }
-
-// Print information about executable
-func (pe *PEInfo) Inspect() {
-    // Basic information
-    fmt.Println(pe)
-
-    // Sections
-    fmt.Println("Sections:")
-    for _, sectInfo := range(pe.Sections) {
-        fmt.Println(sectInfo)
-    }
-
-    // Imported functions
-    if len(pe.Imports) > 0 {
-        fmt.Println("\nImports:")
-        for _, importInfo := range(pe.Imports) {
-            fmt.Println(importInfo)
-        }
-    }
-
-    // Exported functions
-    if pe.Exports.FunctionNames != nil {
-        fmt.Println("Exports:")
-        fmt.Println(pe.Exports)
-    }
-}
