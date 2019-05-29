@@ -1,8 +1,14 @@
 # PE format executable information utility
 
-This is my Golang learning project. It's still incomplete.
+This is simple utility that provides various information about Windows PE (Portable Executable) executables (.EXE, .DLL, etc.) and can extract some data from its.
+It's done as my Golang learning project. Can still be be buggy.
 
-### Planned features:
+### Features:
 - Provide basic info about executable
-- Imports/exports information
+- Provide Sections/Imports/Exports information
+- Section dump
 - Resources listing and extraction
+
+### TODO:
+- Correct icon resource extraction (with header)
+- Better usage help message
