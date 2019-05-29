@@ -2,6 +2,7 @@ package pe
 
 import (
     "os"
+    "io"
     "log"
     "errors"
     "fmt"
@@ -88,6 +89,8 @@ type PEInfo struct {
     Imports []PEImportExportInfo
     // Function exports
     Exports PEImportExportInfo
+    // Resources
+    Resources []PEResource
 }
 
 // Section information
@@ -96,7 +99,7 @@ type PESectionInfo struct {
     Size uint32
     characteristics uint32
     virtualAddress uint32
-    filePointer uint32
+    filePointer int64
 }
 
 // Import information
@@ -105,7 +108,14 @@ type PEImportExportInfo struct {
     FunctionNames []string
 }
 
-// .exe file DOS header
+// Resource information
+type PEResource struct {
+    Id string
+    fileOffset int64
+    Size uint32
+}
+
+// Legacy DOS header
 type DosHeader struct {
     Signature [2]byte
     LastSize uint16
@@ -246,6 +256,30 @@ type ExportDirectory struct {
     AddressOfNameOrdinals uint32
 }
 
+// Resource directory
+type ResourceDirectory struct {
+    Characteristics uint32
+    TimeDateStamp uint32
+    MajorVersion uint16
+    MinorVersion uint16
+    NumberOfNamedEntries uint16
+    NumberOfIdEntries uint16
+}
+
+// Resource directory entry
+type ResourceDirectoryEntry struct {
+    NameId uint32
+    DataPtr uint32
+}
+
+// Structure that contains resource data pointer and size
+type ResourceDataEntry struct {
+    DataPtr uint32
+    Size uint32
+    CodePage uint32
+    Reserved uint32
+}
+
 // Read file contents and populate given structure variable
 func readIntoStruct(file *os.File, data interface{}) {
     bytesRead := make([]byte, binary.Size(data))
@@ -343,6 +377,11 @@ func parsePE(imgFile *os.File) (*PEInfo, error) {
     if _, hasExports := peInfo.directory[DIR_EXPORT]; hasExports {
         parseExports(imgFile, peInfo)
     }
+
+    // Resources
+    if _, hasResources := peInfo.directory[DIR_RESOURCE]; hasResources {
+        parseResources(imgFile, peInfo)
+    }
     
     return peInfo, nil
 }
@@ -360,7 +399,7 @@ func parsePESections(imgFile *os.File, info *PEInfo) {
             Name: strings.Trim(string(sectHeader.Name[:]), "\000"),
             Size: sectHeader.SizeOfRawData,
             virtualAddress: sectHeader.VirtualAddress,
-            filePointer: sectHeader.PointerToRawData,
+            filePointer: int64(sectHeader.PointerToRawData),
             characteristics: sectHeader.Characteristics,
         }
 
@@ -383,7 +422,7 @@ func (pe *PEInfo) findSectionByRva(rva uint32) *PESectionInfo {
 // Get file position corresponding to given RVA
 func (section *PESectionInfo) translateRva(rva uint32) uint32 {
     offsetFromStart := rva - section.virtualAddress
-    return section.filePointer + offsetFromStart
+    return uint32(section.filePointer) + offsetFromStart
 }
 
 // Read zero terminated string from file
@@ -495,6 +534,65 @@ func parseExports(imgFile *os.File, info *PEInfo) {
     }
 }
 
+// Parse resource section and retreive resource entries
+func parseResources(imgFile *os.File, info *PEInfo) {
+    const ResDirEntrySize int = 8
+
+    resourcesRva := info.directory[DIR_RESOURCE].VirtualAddress
+    resDataSection := info.findSectionByRva(resourcesRva)
+    resourceDirPos := resDataSection.translateRva(resourcesRva)
+
+    allResources := []PEResource {}
+
+    // Look for contents of resource directory
+    var walkDirectory func(position int64, path string)
+    walkDirectory = func(position int64, path string) {
+        imgFile.Seek(position, os.SEEK_SET)
+
+        var resDirectory ResourceDirectory
+        readIntoStruct(imgFile, &resDirectory)
+    
+        totalEntriesCount := int(resDirectory.NumberOfNamedEntries +
+                                 resDirectory.NumberOfIdEntries)
+        
+        // Read contents of directory
+        entriesStartPos, _ := imgFile.Seek(0, os.SEEK_CUR)
+
+        for i := 0; i < totalEntriesCount; i++ {
+            entryPos := int64(i * ResDirEntrySize) + entriesStartPos
+            imgFile.Seek(entryPos, os.SEEK_SET)
+
+            var dirEntry ResourceDirectoryEntry
+            readIntoStruct(imgFile, &dirEntry)
+    
+            entryFilePos := (dirEntry.DataPtr & 0x7FFFFFFF) + resourceDirPos
+            entryId := dirEntry.NameId & 0x7FFFFFFF
+
+            // Determine entry type
+            if dirEntry.DataPtr & 0x80000000 > 0 {
+                // Entry is directory - recursively walk through it
+                nestedDirPath := fmt.Sprintf("%s%d/", path, entryId)
+                walkDirectory(int64(entryFilePos), nestedDirPath)
+            } else {
+                // Entry is data - append to resulting array
+                var dataEntry ResourceDataEntry
+                readIntoStruct(imgFile, &dataEntry)
+                offset := int64(resDataSection.translateRva(dataEntry.DataPtr))
+
+                resource := PEResource {
+                    Id: fmt.Sprintf("%s%d", path, entryId),
+                    fileOffset: offset,
+                    Size: dataEntry.Size,
+                }
+                allResources = append(allResources, resource)
+            }
+        }
+    }
+
+    walkDirectory(int64(resourceDirPos), "/")
+    info.Resources = allResources
+}
+
 // Get string representation of section info
 func (section PESectionInfo) String() string {
     charsMap := map[uint32]string {
@@ -585,6 +683,27 @@ func (pe *PEInfo) Close() {
     if pe != nil && pe.file != nil {
         pe.file.Close()
     }
+}
+
+// Dump section contents to file
+func (pe *PEInfo) DumpSection(section PESectionInfo, writer io.Writer) {
+    buffer := make([]byte, section.Size)
+    pe.file.Seek(section.filePointer, os.SEEK_SET)
+    pe.file.Read(buffer)
+    writer.Write(buffer)
+}
+
+// Dump resource data to file
+func (pe *PEInfo) DumpResourceData(resource PEResource, writer io.Writer) {
+    buffer := make([]byte, resource.Size)
+    pe.file.Seek(resource.fileOffset, os.SEEK_SET)
+    pe.file.Read(buffer)
+    writer.Write(buffer)
+}
+
+// Get string representation of resource
+func (resInfo PEResource) String() string {
+    return fmt.Sprintf("%s, size: %d bytes", resInfo.Id, resInfo.Size)
 }
 
 // Get string representation of module and used functions
