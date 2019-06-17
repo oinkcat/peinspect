@@ -7,6 +7,7 @@ import (
     "errors"
     "fmt"
     "strings"
+    "strconv"
     "bytes"
     "encoding/binary"
 )
@@ -58,6 +59,10 @@ const (
     SCN_MEM_EXECUTE uint32 = 0x20000000
     SCN_MEM_READ uint32 = 0x40000000
     SCN_MEM_WRITE uint32 = 0x80000000
+
+    // Resource types
+    RES_TYPE_ICON = 3
+    RES_TYPE_GROUP_ICON = 14
 )
 
 // Parsed information
@@ -280,13 +285,15 @@ type ResourceDataEntry struct {
     Reserved uint32
 }
 
-// Read file contents and populate given structure variable
-func readIntoStruct(file *os.File, data interface{}) {
-    bytesRead := make([]byte, binary.Size(data))
-    file.Read(bytesRead)
-    
-    buffer := bytes.NewBuffer(bytesRead)
-    binary.Read(buffer, binary.LittleEndian, data)
+// .ICO file header
+type IconHeader struct {
+    Width uint8
+    Height uint8
+    ColorCount uint8
+    Reserved uint8
+    Planes uint16
+    BitCount uint16
+    BytesInRes uint32
 }
 
 // Parse internal structures
@@ -423,26 +430,6 @@ func (pe *PEInfo) findSectionByRva(rva uint32) *PESectionInfo {
 func (section *PESectionInfo) translateRva(rva uint32) uint32 {
     offsetFromStart := rva - section.virtualAddress
     return uint32(section.filePointer) + offsetFromStart
-}
-
-// Read zero terminated string from file
-func readAsciiString(file *os.File) string {
-    readBuf:= make([]byte, 8)
-    strBuf := new(bytes.Buffer)
-    
-    for {
-        n, _ := file.Read(readBuf)
-        readBytes := readBuf[:n]
-        zeroPos := bytes.IndexByte(readBytes, 0)
-        if zeroPos == -1 {
-            strBuf.Write(readBytes)
-        } else {
-            strBuf.Write(readBytes[:zeroPos])
-            break
-        }
-    }
-
-    return strBuf.String()
 }
 
 // Parse function imports
@@ -640,6 +627,7 @@ func (pe *PEInfo) ArchName() string {
     }
     return "Other"
 }
+
 func (pe *PEInfo) SubsystemName() string {
     knownSubsystems := map[uint16]string {
         SS_UNKNOWN: "Unknown",
@@ -695,6 +683,45 @@ func (pe *PEInfo) DumpSection(section PESectionInfo, writer io.Writer) {
 
 // Dump resource data to file
 func (pe *PEInfo) DumpResourceData(resource PEResource, writer io.Writer) {
+    const IconSignatureSize = 6
+    const IconHeaderSize = 12
+    const IconInfoSize = IconHeaderSize + 2
+    const IconDataOffset = IconSignatureSize + IconHeaderSize + 4
+
+    // Special handling for ICON resource
+    if(strings.HasPrefix(resource.Id, fmt.Sprintf("/%d/", RES_TYPE_ICON))) {
+        // Get GROUP_ICON resource
+        var groupIconRes PEResource
+        groupIconPrefix := fmt.Sprintf("/%d/", RES_TYPE_GROUP_ICON)
+
+        for _, resInfo := range(pe.Resources) {
+            if strings.HasPrefix(resInfo.Id, groupIconPrefix) {
+                groupIconRes = resInfo
+                break
+            }
+        }
+
+        // GROUP_ICON found - read icon header for given icon
+        if groupIconRes.Size != 0 {
+            pathParts := strings.Split(resource.Id, "/")
+            iconIndex, _ := strconv.Atoi(pathParts[2])
+
+            headerOffset := IconSignatureSize + IconInfoSize * (iconIndex - 1)
+            pe.file.Seek(groupIconRes.fileOffset + int64(headerOffset), os.SEEK_SET)
+
+            var iconHeader IconHeader
+            readIntoStruct(pe.file, &iconHeader)
+
+            // Write icon signature, header and data offset prior icon data
+            writer.Write([]uint8 { 0, 0, 1, 0, 1, 0 })
+            binary.Write(writer, binary.LittleEndian, iconHeader)
+
+            offsetBuf := make([]uint8, 4)
+            binary.LittleEndian.PutUint32(offsetBuf, IconDataOffset)
+            writer.Write(offsetBuf)
+        }
+    }
+
     buffer := make([]byte, resource.Size)
     pe.file.Seek(resource.fileOffset, os.SEEK_SET)
     pe.file.Read(buffer)
