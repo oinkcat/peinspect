@@ -683,49 +683,54 @@ func (pe *PEInfo) DumpSection(section PESectionInfo, writer io.Writer) {
 
 // Dump resource data to file
 func (pe *PEInfo) DumpResourceData(resource PEResource, writer io.Writer) {
-    const IconSignatureSize = 6
-    const IconHeaderSize = 12
-    const IconInfoSize = IconHeaderSize + 2
-    const IconDataOffset = IconSignatureSize + IconHeaderSize + 4
-
     // Special handling for ICON resource
     if(strings.HasPrefix(resource.Id, fmt.Sprintf("/%d/", RES_TYPE_ICON))) {
-        // Get GROUP_ICON resource
-        var groupIconRes PEResource
-        groupIconPrefix := fmt.Sprintf("/%d/", RES_TYPE_GROUP_ICON)
-
-        for _, resInfo := range(pe.Resources) {
-            if strings.HasPrefix(resInfo.Id, groupIconPrefix) {
-                groupIconRes = resInfo
-                break
-            }
-        }
-
-        // GROUP_ICON found - read icon header for given icon
-        if groupIconRes.Size != 0 {
-            pathParts := strings.Split(resource.Id, "/")
-            iconIndex, _ := strconv.Atoi(pathParts[2])
-
-            headerOffset := IconSignatureSize + IconInfoSize * (iconIndex - 1)
-            pe.file.Seek(groupIconRes.fileOffset + int64(headerOffset), os.SEEK_SET)
-
-            var iconHeader IconHeader
-            readIntoStruct(pe.file, &iconHeader)
-
-            // Write icon signature, header and data offset prior icon data
-            writer.Write([]uint8 { 0, 0, 1, 0, 1, 0 })
-            binary.Write(writer, binary.LittleEndian, iconHeader)
-
-            offsetBuf := make([]uint8, 4)
-            binary.LittleEndian.PutUint32(offsetBuf, IconDataOffset)
-            writer.Write(offsetBuf)
-        }
+        pe.writeIconHeader(resource, writer)
     }
 
     buffer := make([]byte, resource.Size)
     pe.file.Seek(resource.fileOffset, os.SEEK_SET)
     pe.file.Read(buffer)
     writer.Write(buffer)
+}
+
+// Extract and write icon header
+func (pe *PEInfo) writeIconHeader(resource PEResource, writer io.Writer) {
+    const IconSignatureSize = 6
+    const IconHeaderSize = 12
+    const IconInfoSize = IconHeaderSize + 2
+    const IconDataOffset = IconSignatureSize + IconHeaderSize + 4
+
+    // Get GROUP_ICON resource
+    var groupIconRes PEResource
+    groupIconPrefix := fmt.Sprintf("/%d/", RES_TYPE_GROUP_ICON)
+
+    for _, resInfo := range(pe.Resources) {
+        if strings.HasPrefix(resInfo.Id, groupIconPrefix) {
+            groupIconRes = resInfo
+            break
+        }
+    }
+
+    // GROUP_ICON found - read icon header for given icon
+    if groupIconRes.Size != 0 {
+        pathParts := strings.Split(resource.Id, "/")
+        iconIndex, _ := strconv.Atoi(pathParts[2])
+
+        headerOffset := IconSignatureSize + IconInfoSize * (iconIndex - 1)
+        pe.file.Seek(groupIconRes.fileOffset + int64(headerOffset), os.SEEK_SET)
+
+        var iconHeader IconHeader
+        readIntoStruct(pe.file, &iconHeader)
+
+        // Write icon signature, header and data offset prior icon data
+        writer.Write([]uint8 { 0, 0, 1, 0, 1, 0 })
+        binary.Write(writer, binary.LittleEndian, iconHeader)
+
+        offsetBuf := make([]uint8, 4)
+        binary.LittleEndian.PutUint32(offsetBuf, IconDataOffset)
+        writer.Write(offsetBuf)
+    }
 }
 
 // Get string representation of resource
