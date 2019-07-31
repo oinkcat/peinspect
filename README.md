@@ -8,7 +8,3 @@ It's done as my Golang learning project. Can still be be buggy.
 - Provide Sections/Imports/Exports information
 - Section dump
 - Resources listing and extraction
-
-### TODO:
-- Correct icon resource extraction (with header)
-- Better usage help message
