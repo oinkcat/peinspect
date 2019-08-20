@@ -203,7 +203,11 @@ func getRequestedAction() string {
 }
 
 func init() {
-    flag.StringVar(&flagAction, "action", ACTION_INFO, "requested action")
+    flag.Usage = printUsage
+
+    flag.StringVar(&flagAction, "action", ACTION_INFO, 
+        fmt.Sprintf("requested action (%s - default, %s, %s)",
+                    ACTION_INFO, ACTION_DUMP, ACTION_EXTRACT))
     flag.BoolVar(&flagAll,"A", true, "Print all info (default if no other flags)")
     flag.BoolVar(&flagBasicInfo,"B", false, "Print basic info")
     flag.BoolVar(&flagSections,"S", false, "Print sections")
@@ -223,7 +227,9 @@ func main() {
     // Check for correct action
     action := getRequestedAction()
 
-    if action != ACTION_INVALID {
+    if flagHelp {
+        printUsage()
+    } else if action != ACTION_INVALID {
         var peInfo *pe.PEInfo
         var err interface{}
 
