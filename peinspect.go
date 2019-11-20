@@ -24,6 +24,7 @@ var (
     flagImports bool
     flagExports bool
     flagResources bool
+    flagDotNetInfo bool
     flagHelp bool
 )
 
@@ -100,11 +101,24 @@ func getPrintersList() []InfoPrinter {
         }
     }
 
+    // .NET CLR info
+    dotNetInfoPrinter := func(info *pe.PEInfo) {
+        if info.CLRInfo.Size > 0 {
+            if multipleInfo {
+                fmt.Println()
+            }
+            fmt.Println("CLR loader info:")
+            fmt.Println(info.CLRInfo)
+        } else if !multipleInfo {
+            fmt.Println("No CLR loader information!")
+        }
+    }
+
     // Add printer functions for requested info
 
     allInfo := !(flagBasicInfo || flagSections || 
                  flagImports || flagExports || 
-                 flagResources)
+                 flagResources || flagDotNetInfo)
 
     printers := []InfoPrinter {}
 
@@ -122,6 +136,9 @@ func getPrintersList() []InfoPrinter {
     }
     if flagResources || allInfo {
         printers = append(printers, resourcesPrinter)
+    }
+    if flagDotNetInfo || allInfo {
+        printers = append(printers, dotNetInfoPrinter)
     }
 
     if len(printers) > 1 {
@@ -214,6 +231,7 @@ func init() {
     flag.BoolVar(&flagImports,"I", false, "Print imports")
     flag.BoolVar(&flagExports,"E", false, "Print exports")
     flag.BoolVar(&flagResources,"R", false, "Print resources")
+    flag.BoolVar(&flagDotNetInfo,"N", false, "Print .NET info")
 
     flag.BoolVar(&flagHelp,"help", false, "Display help message")
     

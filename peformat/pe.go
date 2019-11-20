@@ -51,6 +51,7 @@ const (
     DIR_IMPORT = 1
     DIR_RESOURCE = 2
     DIR_DEBUG = 6
+    DIR_COM_DESCRIPTOR = 14
 
     // Section characteristics
     SCN_CODE uint32 = 0x20
@@ -63,6 +64,15 @@ const (
     // Resource types
     RES_TYPE_ICON = 3
     RES_TYPE_GROUP_ICON = 14
+
+    // CLR header flags
+    COMIMAGE_FLAGS_ILONLY = 0x01
+    COMIMAGE_FLAGS_32BITREQUIRED = 0x02
+    COMIMAGE_FLAGS_IL_LIBRARY = 0x04
+    COMIMAGE_FLAGS_STRONGNAMESIGNED = 0x08
+    COMIMAGE_FLAGS_NATIVE_ENTRYPOINT = 0x10
+    COMIMAGE_FLAGS_TRACKDEBUGDATA = 0x10000
+    COMIMAGE_FLAGS_32BITPREFERRED = 0x20000
 )
 
 // Parsed information
@@ -73,6 +83,7 @@ type PEInfo struct {
     archType uint16
     isDriver bool
     isDLL bool
+    isDotNetAssembly bool
     entryPointAddress uint32
     subsystem uint16
     peHeaderOffset uint16
@@ -96,6 +107,8 @@ type PEInfo struct {
     Exports PEImportExportInfo
     // Resources
     Resources []PEResource
+    // .NET CLR info
+    CLRInfo COR20Header
 }
 
 // Section information
@@ -296,6 +309,21 @@ type IconHeader struct {
     BytesInRes uint32
 }
 
+// CLR loader information
+type COR20Header struct {
+    Size uint32
+    MajorRuntimeVersion uint16
+    MinorRuntimeVersion uint16
+    MetaData DataDirectory
+    Flags uint32
+    EntryPoint uint32
+    Resources DataDirectory
+    CodeManagerTable DataDirectory
+    VTableFixups DataDirectory
+    ExportAddressTablejumps DataDirectory
+    ManagedNativeHeader DataDirectory
+}
+
 // Parse internal structures
 func parsePE(imgFile *os.File) (*PEInfo, error) {
     // Read DOS header
@@ -388,6 +416,11 @@ func parsePE(imgFile *os.File) (*PEInfo, error) {
     // Resources
     if _, hasResources := peInfo.directory[DIR_RESOURCE]; hasResources {
         parseResources(imgFile, peInfo)
+    }
+
+    // CLR header
+    if _, hasClrInfo := peInfo.directory[DIR_COM_DESCRIPTOR]; hasClrInfo {
+        parseClrHeader(imgFile, peInfo)
     }
     
     return peInfo, nil
@@ -580,6 +613,17 @@ func parseResources(imgFile *os.File, info *PEInfo) {
     info.Resources = allResources
 }
 
+// Read CLR loader information
+func parseClrHeader(imgFile *os.File, info *PEInfo) {
+    clrHeaderRva := info.directory[DIR_COM_DESCRIPTOR].VirtualAddress
+    clrDataSection := info.findSectionByRva(clrHeaderRva)
+    clrHeaderPos := int64(clrDataSection.translateRva(clrHeaderRva))
+
+    imgFile.Seek(clrHeaderPos, os.SEEK_SET)
+    readIntoStruct(imgFile, &info.CLRInfo)
+    info.isDotNetAssembly = true
+}
+
 // Get string representation of section info
 func (section PESectionInfo) String() string {
     charsMap := map[uint32]string {
@@ -733,6 +777,11 @@ func (pe *PEInfo) writeIconHeader(resource PEResource, writer io.Writer) {
     }
 }
 
+// Get string representation of CLR info
+func (clrInfo COR20Header) String() string {
+    return fmt.Sprintf("Flags: 0x%X\n", clrInfo.Flags)
+}
+
 // Get string representation of resource
 func (resInfo PEResource) String() string {
     return fmt.Sprintf("%s, size: %d bytes", resInfo.Id, resInfo.Size)
@@ -778,6 +827,10 @@ func (pe PEInfo) String() string {
     
     if pe.isDLL {
         appendString("DLL image file\n")
+    }
+
+    if pe.isDotNetAssembly {
+        appendString("Executable is .NET assembly\n")
     }
     
     appendFmt("Base address: %#x\n", pe.baseAddress)
